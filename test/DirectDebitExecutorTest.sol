@@ -5,24 +5,24 @@ import { Test } from "forge-std/Test.sol";
 import { RhinestoneModuleKit, ModuleKitHelpers, AccountInstance } from "modulekit/ModuleKit.sol";
 import { MODULE_TYPE_EXECUTOR } from "modulekit/accounts/common/interfaces/IERC7579Module.sol";
 import { ExecutionLib } from "modulekit/accounts/erc7579/lib/ExecutionLib.sol";
-import { ExecutorTemplate } from "src/ExecutorTemplate.sol";
+import { DirectDebitExecutor, DirectDebit } from "src/DirectDebitExecutor.sol";
 
-contract ExecutorTemplateTest is RhinestoneModuleKit, Test {
+contract DirectDebitExecutorTest is RhinestoneModuleKit, Test {
     using ModuleKitHelpers for *;
 
     // account and modules
     AccountInstance internal instance;
-    ExecutorTemplate internal executor;
+    DirectDebitExecutor internal executor;
 
     function setUp() public {
         init();
 
         // Create the executor
-        executor = new ExecutorTemplate();
-        vm.label(address(executor), "ExecutorTemplate");
+        executor = new DirectDebitExecutor();
+        vm.label(address(executor), "DirectDebitExecutor");
 
         // Create the account and install the executor
-        instance = makeAccountInstance("ExecutorTemplate");
+        instance = makeAccountInstance("ExecutorInstance");
         vm.deal(address(instance.account), 10 ether);
         instance.installModule({
             moduleTypeId: MODULE_TYPE_EXECUTOR,
@@ -40,15 +40,26 @@ contract ExecutorTemplateTest is RhinestoneModuleKit, Test {
         uint256 prevBalance = target.balance;
 
         // Encode the execution data sent to the account
-        bytes memory callData = ExecutionLib.encodeSingle(target, value, "");
+        bytes memory callData = abi.encode(DirectDebit(
+            target,
+            address(0), // token
+            value, // max amount
+            1 days, // interval
+            1, // first payment
+            uint128(block.timestamp + 10 days) // expires at
+        ));
 
-        // Execute the call
-        // EntryPoint -> Account -> Executor -> Account -> Target
         instance.exec({
             target: address(executor),
             value: 0,
-            callData: abi.encodeWithSelector(ExecutorTemplate.execute.selector, callData)
+            callData: abi.encodeWithSelector(DirectDebitExecutor.createDirectDebit.selector, callData)
         });
+
+        // First payment should be made immediately
+        assertEq(executor.canExecute(address(instance.account), 0, value), true);
+
+        vm.prank(target);
+        executor.execute(address(instance.account), 0, value);
 
         // Check if the balance of the target has increased
         assertEq(target.balance, prevBalance + value);
