@@ -32,7 +32,7 @@ Once authorized, the receiver can execute payments when they are due. The receiv
 
 Each payment attempt is validated to ensure:
 - The direct debit exists and is active
-- The payment interval has elapsed since last payment
+- No payment has been made in the current period
 - The requested amount is within limits
 - The account has sufficient funds
 - The caller is the authorized receiver
