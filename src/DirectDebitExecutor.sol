@@ -10,14 +10,26 @@ import { ERC20Integration } from "modulekit/integrations/ERC20.sol";
 import { IERC20 } from "forge-std/interfaces/IERC20.sol";
 import { ExecutionLib } from "modulekit/accounts/erc7579/lib/ExecutionLib.sol";
 
-// packed into three slots
+/// @title DirectDebitExecutor
+/// @notice A module that enables automated recurring payments (direct debits) from
+/// ERC7579-compatible smart accounts
+/// @dev Implements ERC7579ExecutorBase for smart account integration
+
+/// @notice Represents a recurring payment configuration
+/// @dev Packed into three storage slots for gas optimization
+/// @param token The token address (0x0 for native token)
+/// @param firstPayment Timestamp when the first payment can be executed
+/// @param expiresAt Timestamp when the direct debit becomes invalid
+/// @param receiver Address that will receive the payments
+/// @param interval Time period between allowed payments (in seconds)
+/// @param maxAmount Maximum amount that can be debited per interval
 struct DirectDebit {
-    address token; // 0x0 for native token
-    uint48 firstPayment; // timestamp of first direct debit
-    uint48 expiresAt; // timestamp when the direct debit expires
-    address receiver; // address to receive the direct debit
-    uint96 interval; // interval between direct debits
-    uint256 maxAmount; // maximum amount to be spent per interval
+    address token;
+    uint48 firstPayment;
+    uint48 expiresAt;
+    address receiver;
+    uint96 interval;
+    uint256 maxAmount;
 }
 
 contract DirectDebitExecutor is ERC7579ExecutorBase {
@@ -110,6 +122,10 @@ contract DirectDebitExecutor is ERC7579ExecutorBase {
         return isInstalled[smartAccount];
     }
 
+    /**
+     * @notice Creates a new direct debit configuration
+     * @param directDebit The direct debit configuration to create
+     */
     function createDirectDebit(DirectDebit memory directDebit) external {
         directDebits[msg.sender][currentIds[msg.sender]] = directDebit;
         currentIds[msg.sender]++;
@@ -125,6 +141,10 @@ contract DirectDebitExecutor is ERC7579ExecutorBase {
         );
     }
 
+    /**
+     * @notice Cancels an existing direct debit by setting its expiration to current timestamp
+     * @param id The identifier of the direct debit to cancel
+     */
     function cancelDirectDebit(uint128 id) external {
         directDebits[msg.sender][id].expiresAt = uint48(block.timestamp);
         emit DirectDebitAmended(
@@ -139,6 +159,11 @@ contract DirectDebitExecutor is ERC7579ExecutorBase {
         );
     }
 
+    /**
+     * @notice Modifies an existing direct debit configuration
+     * @param id The identifier of the direct debit to modify
+     * @param directDebit The new direct debit configuration
+     */
     function amendDirectDebit(uint128 id, DirectDebit memory directDebit) external {
         directDebits[msg.sender][id] = directDebit;
         emit DirectDebitAmended(
@@ -157,6 +182,14 @@ contract DirectDebitExecutor is ERC7579ExecutorBase {
                                      MODULE LOGIC
     //////////////////////////////////////////////////////////////////////////*/
 
+    /**
+     * @notice Validates if a direct debit can be executed
+     * @param smartWallet The address of the smart wallet
+     * @param id The identifier of the direct debit
+     * @param amount The amount to be debited
+     * @return valid Whether the direct debit can be executed
+     * @return error The specific error if validation fails
+     */
     function validateDirectDebit(
         address smartWallet,
         uint128 id,
@@ -200,6 +233,13 @@ contract DirectDebitExecutor is ERC7579ExecutorBase {
         return (true, DirectDebitError.None);
     }
 
+    /**
+     * @notice Checks if a direct debit can be executed
+     * @param smartWallet The address of the smart wallet
+     * @param id The identifier of the direct debit
+     * @param amount The amount to be debited
+     * @return bool Whether the direct debit can be executed
+     */
     function canExecute(
         address smartWallet,
         uint128 id,
@@ -213,6 +253,13 @@ contract DirectDebitExecutor is ERC7579ExecutorBase {
         return valid;
     }
 
+    /**
+     * @notice Executes a direct debit payment
+     * @dev Only the receiver of the direct debit can execute it
+     * @param smartWallet The address of the smart wallet
+     * @param id The identifier of the direct debit
+     * @param amount The amount to be debited
+     */
     function execute(address smartWallet, uint128 id, uint256 amount) external {
         DirectDebit memory directDebit = directDebits[smartWallet][id];
 
@@ -257,29 +304,25 @@ contract DirectDebitExecutor is ERC7579ExecutorBase {
     //////////////////////////////////////////////////////////////////////////*/
 
     /**
-     * The name of the module
-     *
-     * @return name The name of the module
+     * @notice Returns the name of the module
+     * @return string The module name
      */
     function name() external pure returns (string memory) {
         return "DirectDebitExecutor";
     }
 
     /**
-     * The version of the module
-     *
-     * @return version The version of the module
+     * @notice Returns the version of the module
+     * @return string The module version
      */
     function version() external pure returns (string memory) {
         return "0.0.1";
     }
 
     /**
-     * Check if the module is of a certain type
-     *
-     * @param typeID The type ID to check
-     *
-     * @return true if the module is of the given type, false otherwise
+     * @notice Checks if the module supports a specific type
+     * @param typeID The type identifier to check
+     * @return bool Whether the module supports the type
      */
     function isModuleType(uint256 typeID) external pure override returns (bool) {
         return typeID == TYPE_EXECUTOR;
