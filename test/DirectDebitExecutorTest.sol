@@ -38,6 +38,7 @@ contract DirectDebitExecutorTest is RhinestoneModuleKit, Test {
     function testExec() public {
         // Create a target address and send some ether to it
         address target = makeAddr("target");
+        address badTarget = makeAddr("badTarget");
         uint128 value = 1 ether;
 
         // Get the current balance of the target
@@ -46,11 +47,11 @@ contract DirectDebitExecutorTest is RhinestoneModuleKit, Test {
         // Encode the execution data sent to the account
         DirectDebit memory debit = DirectDebit(
             address(0), // token
-            target, // receiver
-            value, // max amount
-            1 days, // interval
             0, // first payment
-            uint128(block.timestamp + 10 days) // expires at
+            uint48(block.timestamp + 10 days), // expires at
+            target, // receiver
+            1 days, // interval
+            value // max amount
         );
 
         instance.exec({
@@ -62,10 +63,36 @@ contract DirectDebitExecutorTest is RhinestoneModuleKit, Test {
         // First payment should be made immediately
         assertEq(executor.canExecute(address(instance.account), 0, value), true);
 
+        vm.prank(badTarget);
+        vm.expectRevert(DirectDebitExecutor.DirectDebitNotReceiver.selector);
+        executor.execute(address(instance.account), 0, value);
+
+        vm.prank(target);
+        vm.expectRevert(DirectDebitExecutor.DirectDebitExceeded.selector);
+        executor.execute(address(instance.account), 0, value * 2);
+
         vm.prank(target);
         executor.execute(address(instance.account), 0, value);
 
         // Check if the balance of the target has increased
         assertEq(target.balance, prevBalance + value);
+
+        vm.prank(target);
+        vm.expectRevert(DirectDebitExecutor.DirectDebitNotDue.selector);
+        executor.execute(address(instance.account), 0, value);
+
+        // Check if the last payment timestamp is set correctly
+        assertEq(executor.lastPayment(address(instance.account), 0), block.timestamp);
+
+        // Wait for the interval to pass
+        skip(debit.interval + 1);
+        assertLt(
+            executor.lastPayment(address(instance.account), 0) + debit.interval, block.timestamp
+        );
+        vm.prank(target);
+        executor.execute(address(instance.account), 0, value);
+
+        // Check if the balance of the target has increased
+        assertEq(target.balance, prevBalance + value * 2);
     }
 }

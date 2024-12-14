@@ -41,36 +41,36 @@ contract DirectDebitExecutor is ERC7579ExecutorBase {
 
     event DirectDebitCreated(
         address indexed smartWallet,
-        uint128 indexed id,
+        uint256 indexed id,
         address indexed receiver,
         address token,
         uint256 maxAmount,
-        uint128 interval,
-        uint128 firstPayment,
-        uint128 expiresAt
+        uint256 interval,
+        uint256 firstPayment,
+        uint256 expiresAt
     );
     event DirectDebitExecuted(
         address indexed smartWallet,
-        uint128 indexed id,
+        uint256 indexed id,
         address indexed receiver,
         address token,
         uint256 amount
     );
     event DirectDebitAmended(
         address indexed smartWallet,
-        uint128 indexed id,
+        uint256 indexed id,
         address indexed receiver,
         address token,
         uint256 maxAmount,
-        uint128 interval,
-        uint128 firstPayment,
-        uint128 expiresAt
+        uint256 interval,
+        uint256 firstPayment,
+        uint256 expiresAt
     );
 
-    mapping(address smartWallet => mapping(uint128 id => DirectDebit directDebit)) public
+    mapping(address smartWallet => mapping(uint256 id => DirectDebit directDebit)) public
         directDebits;
-    mapping(address smartWallet => mapping(uint128 id => uint128 lastPayment)) public lastPayment;
-    mapping(address smartWallet => uint128 currentId) public currentIds;
+    mapping(address smartWallet => mapping(uint256 id => uint256 lastPayment)) public lastPayment;
+    mapping(address smartWallet => uint256 currentId) public currentIds;
     mapping(address smartWallet => bool isInstalled) public isInstalled;
 
     /*//////////////////////////////////////////////////////////////////////////
@@ -122,7 +122,7 @@ contract DirectDebitExecutor is ERC7579ExecutorBase {
     }
 
     function cancelDirectDebit(uint128 id) external {
-        directDebits[msg.sender][id].expiresAt = uint128(block.timestamp);
+        directDebits[msg.sender][id].expiresAt = uint48(block.timestamp);
         emit DirectDebitAmended(
             msg.sender,
             id,
@@ -164,23 +164,29 @@ contract DirectDebitExecutor is ERC7579ExecutorBase {
     {
         DirectDebit memory directDebit = directDebits[smartWallet][id];
 
+        // Check if the direct debit exists
         if (id >= currentIds[smartWallet]) {
             return (false, DirectDebitError.NotActive);
         }
-        if (block.timestamp < directDebit.firstPayment || block.timestamp > directDebit.expiresAt) {
+        // Check if the direct debit is active. Has started and not expired
+        if (block.timestamp < directDebit.firstPayment || block.timestamp >= directDebit.expiresAt)
+        {
             return (false, DirectDebitError.NotActive);
         }
+        // Check if the direct debit is due
         if (block.timestamp < lastPayment[smartWallet][id] + directDebit.interval) {
             return (false, DirectDebitError.NotDue);
         }
+        // Check if the amount is within the max amount
         if (amount > directDebit.maxAmount) {
             return (false, DirectDebitError.Exceeded);
         }
+        // Check if the token is an ERC20 and if the amount is within the balance of the smart
+        // wallet
         if (directDebit.token != address(0)) {
-            // TODO: add ERC20 integration
-            // if (amount > IERC20(smartWallet).balanceOf(directDebit.token)) {
-            //     return (false, DirectDebitError.NotEnoughFunds);
-            // }
+            if (amount > IERC20(smartWallet).balanceOf(directDebit.token)) {
+                return (false, DirectDebitError.NotEnoughFunds);
+            }
         } else {
             if (amount > address(smartWallet).balance) {
                 return (false, DirectDebitError.NotEnoughFunds);
@@ -222,7 +228,7 @@ contract DirectDebitExecutor is ERC7579ExecutorBase {
             revert DirectDebitNotReceiver();
         }
         // Update last payment timestamp before execution to avoid reentrancy
-        lastPayment[smartWallet][id] = uint128(block.timestamp);
+        lastPayment[smartWallet][id] = block.timestamp;
 
         // Create execution data based on token type
         Execution memory execution;
