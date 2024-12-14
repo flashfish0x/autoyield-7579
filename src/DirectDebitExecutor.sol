@@ -50,6 +50,9 @@ contract DirectDebitExecutor is ERC7579ExecutorBase {
     error DirectDebitExceeded();
     error DirectDebitNotEnoughFunds();
     error DirectDebitNotReceiver();
+    error DirectDebitExpiresInThePast();
+    error DirectDebitIntervalZero();
+    error DirectDebitMaxAmountZero();
 
     event DirectDebitCreated(
         address indexed smartWallet,
@@ -127,6 +130,15 @@ contract DirectDebitExecutor is ERC7579ExecutorBase {
      * @param directDebit The direct debit configuration to create
      */
     function createDirectDebit(DirectDebit memory directDebit) external {
+        if (directDebit.expiresAt < block.timestamp) {
+            revert DirectDebitExpiresInThePast();
+        }
+        if (directDebit.interval == 0) {
+            revert DirectDebitIntervalZero();
+        }
+        if (directDebit.maxAmount == 0) {
+            revert DirectDebitMaxAmountZero();
+        }
         directDebits[msg.sender][currentIds[msg.sender]] = directDebit;
         currentIds[msg.sender]++;
         emit DirectDebitCreated(
@@ -205,15 +217,18 @@ contract DirectDebitExecutor is ERC7579ExecutorBase {
         if (id >= currentIds[smartWallet]) {
             return (false, DirectDebitError.NotActive);
         }
-        // Check if the direct debit is active. Has started and not expired
-        if (block.timestamp < directDebit.firstPayment || block.timestamp >= directDebit.expiresAt)
-        {
+
+        uint256 _currentPeriod = currentPeriod(smartWallet, id);
+
+        // Check if the direct debit is active. in current period and not expired
+        if (block.timestamp < _currentPeriod || block.timestamp >= directDebit.expiresAt) {
             return (false, DirectDebitError.NotActive);
         }
-        // Check if the direct debit is due
-        if (block.timestamp < lastPayment[smartWallet][id] + directDebit.interval) {
+
+        if (lastPayment[smartWallet][id] >= _currentPeriod) {
             return (false, DirectDebitError.NotDue);
         }
+
         // Check if the amount is within the max amount
         if (amount > directDebit.maxAmount) {
             return (false, DirectDebitError.Exceeded);
@@ -251,6 +266,21 @@ contract DirectDebitExecutor is ERC7579ExecutorBase {
     {
         (bool valid,) = validateDirectDebit(smartWallet, id, amount);
         return valid;
+    }
+
+    /**
+     * @notice Calculates the current period for a direct debit
+     * @param smartWallet The address of the smart wallet
+     * @param id The identifier of the direct debit
+     * @return uint256 The timestamp of the start of the current period
+     */
+    function currentPeriod(address smartWallet, uint128 id) public view returns (uint256) {
+        return directDebits[smartWallet][id].firstPayment
+            + directDebits[smartWallet][id].interval
+                * (
+                    (block.timestamp - directDebits[smartWallet][id].firstPayment)
+                        / directDebits[smartWallet][id].interval
+                );
     }
 
     /**

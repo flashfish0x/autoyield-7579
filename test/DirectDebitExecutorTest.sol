@@ -17,8 +17,16 @@ contract DirectDebitExecutorTest is RhinestoneModuleKit, Test {
 
     MockERC20 erc20Token;
 
+    address target;
+    address badTarget;
+    uint128 value;
+
     function setUp() public {
         init();
+
+        target = makeAddr("target");
+        badTarget = makeAddr("badTarget");
+        value = 1 ether;
 
         erc20Token = new MockERC20("TestToken", "TEST");
 
@@ -38,15 +46,11 @@ contract DirectDebitExecutorTest is RhinestoneModuleKit, Test {
             module: address(executor),
             data: ""
         });
+
+        erc20Token.mint(address(instance.account), value);
     }
 
     function testERC20DirectDebit() public {
-        address target = makeAddr("target");
-        address badTarget = makeAddr("badTarget");
-        uint128 value = 1 ether;
-
-        erc20Token.mint(address(instance.account), value);
-
         // create a direct debit
         DirectDebit memory debit = DirectDebit(
             address(erc20Token), 0, uint48(block.timestamp + 10 days), target, 1 days, value
@@ -91,9 +95,6 @@ contract DirectDebitExecutorTest is RhinestoneModuleKit, Test {
 
     function testEtherDirectDebit() public {
         // Create a target address and send some ether to it
-        address target = makeAddr("target");
-        address badTarget = makeAddr("badTarget");
-        uint128 value = 1 ether;
 
         // Get the current balance of the target
         uint256 prevBalance = target.balance;
@@ -117,20 +118,26 @@ contract DirectDebitExecutorTest is RhinestoneModuleKit, Test {
         // First payment should be made immediately
         assertEq(executor.canExecute(address(instance.account), 0, value), true);
 
+        //can't execute if not the receiver
         vm.prank(badTarget);
         vm.expectRevert(DirectDebitExecutor.DirectDebitNotReceiver.selector);
         executor.execute(address(instance.account), 0, value);
 
+        //can't execute if the max amount is exceeded
         vm.prank(target);
         vm.expectRevert(DirectDebitExecutor.DirectDebitExceeded.selector);
         executor.execute(address(instance.account), 0, value * 2);
 
+        // can execute
         vm.prank(target);
         executor.execute(address(instance.account), 0, value);
 
         // Check if the balance of the target has increased
         assertEq(target.balance, prevBalance + value);
 
+        assertEq(executor.currentPeriod(address(instance.account), 0), block.timestamp);
+
+        uint256 currentPeriod = executor.currentPeriod(address(instance.account), 0);
         vm.prank(target);
         vm.expectRevert(DirectDebitExecutor.DirectDebitNotDue.selector);
         executor.execute(address(instance.account), 0, value);
@@ -140,6 +147,9 @@ contract DirectDebitExecutorTest is RhinestoneModuleKit, Test {
 
         // Wait for the interval to pass
         skip(debit.interval + 1);
+        assertEq(
+            executor.currentPeriod(address(instance.account), 0), currentPeriod + debit.interval
+        );
         assertLt(
             executor.lastPayment(address(instance.account), 0) + debit.interval, block.timestamp
         );
@@ -148,5 +158,36 @@ contract DirectDebitExecutorTest is RhinestoneModuleKit, Test {
 
         // Check if the balance of the target has increased
         assertEq(target.balance, prevBalance + value * 2);
+    }
+
+    function testMissingDirectDebit() public {
+        // Encode the execution data sent to the account
+        DirectDebit memory debit = DirectDebit(
+            address(0), // token
+            0, // first payment
+            uint48(block.timestamp + 10 days), // expires at
+            target, // receiver
+            1 days, // interval
+            value // max amount
+        );
+
+        // start the direct debit in the middle of the interval
+        skip(debit.interval / 2);
+
+        instance.exec({
+            target: address(executor),
+            value: 0,
+            callData: abi.encodeWithSelector(DirectDebitExecutor.createDirectDebit.selector, debit)
+        });
+
+        skip(debit.interval + 1);
+
+        vm.prank(target);
+        executor.execute(address(instance.account), 0, value);
+
+        //make sure we can't execute the direct debit again
+        vm.prank(target);
+        vm.expectRevert(DirectDebitExecutor.DirectDebitNotDue.selector);
+        executor.execute(address(instance.account), 0, value);
     }
 }
