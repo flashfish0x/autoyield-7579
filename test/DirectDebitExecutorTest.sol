@@ -4,8 +4,9 @@ pragma solidity ^0.8.23;
 import { Test } from "forge-std/Test.sol";
 import { RhinestoneModuleKit, ModuleKitHelpers, AccountInstance } from "modulekit/ModuleKit.sol";
 import { MODULE_TYPE_EXECUTOR } from "modulekit/accounts/common/interfaces/IERC7579Module.sol";
-import { ExecutionLib } from "modulekit/accounts/erc7579/lib/ExecutionLib.sol";
+// import { ExecutionLib } from "modulekit/accounts/erc7579/lib/ExecutionLib.sol";
 import { DirectDebitExecutor, DirectDebit } from "src/DirectDebitExecutor.sol";
+import { MockERC20 } from "src/MockERC20.sol";
 
 contract DirectDebitExecutorTest is RhinestoneModuleKit, Test {
     using ModuleKitHelpers for *;
@@ -14,8 +15,12 @@ contract DirectDebitExecutorTest is RhinestoneModuleKit, Test {
     AccountInstance internal instance;
     DirectDebitExecutor internal executor;
 
+    MockERC20 erc20Token;
+
     function setUp() public {
         init();
+
+        erc20Token = new MockERC20("TestToken", "TEST");
 
         // Set the block timestamp to 200 days in the future because starting at 0 will cause
         // problems with DirectDebitError.NotDue
@@ -35,7 +40,56 @@ contract DirectDebitExecutorTest is RhinestoneModuleKit, Test {
         });
     }
 
-    function testExec() public {
+    function testERC20DirectDebit() public {
+        address target = makeAddr("target");
+        address badTarget = makeAddr("badTarget");
+        uint128 value = 1 ether;
+
+        erc20Token.mint(address(instance.account), value);
+
+        // create a direct debit
+        DirectDebit memory debit = DirectDebit(
+            address(erc20Token), 0, uint48(block.timestamp + 10 days), target, 1 days, value
+        );
+        instance.exec({
+            target: address(executor),
+            value: 0,
+            callData: abi.encodeWithSelector(DirectDebitExecutor.createDirectDebit.selector, debit)
+        });
+
+        // check if the direct debit is valid
+        assertEq(executor.canExecute(address(instance.account), 0, value), true);
+
+        // check if the direct debit is not valid
+        assertEq(executor.canExecute(address(instance.account), 0, value * 2), false);
+
+        vm.prank(target);
+        executor.execute(address(instance.account), 0, value);
+
+        // check if the balance of the target has increased
+        assertEq(erc20Token.balanceOf(target), value);
+
+        // check if the last payment timestamp is set correctly
+        assertEq(executor.lastPayment(address(instance.account), 0), block.timestamp);
+
+        // wait for the interval to pass
+        skip(debit.interval + 1);
+        assertLt(
+            executor.lastPayment(address(instance.account), 0) + debit.interval, block.timestamp
+        );
+        vm.prank(target);
+        vm.expectRevert(DirectDebitExecutor.DirectDebitNotEnoughFunds.selector);
+        executor.execute(address(instance.account), 0, value);
+
+        erc20Token.mint(address(instance.account), value);
+        vm.prank(target);
+        executor.execute(address(instance.account), 0, value);
+
+        // check if the balance of the target has increased
+        assertEq(erc20Token.balanceOf(target), value * 2);
+    }
+
+    function testEtherDirectDebit() public {
         // Create a target address and send some ether to it
         address target = makeAddr("target");
         address badTarget = makeAddr("badTarget");

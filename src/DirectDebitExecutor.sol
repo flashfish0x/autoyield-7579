@@ -22,7 +22,7 @@ struct DirectDebit {
 
 contract DirectDebitExecutor is ERC7579ExecutorBase {
     /*//////////////////////////////////////////////////////////////////////////
-                            CONSTANTS & STORAGE
+                            LOGS & ERRORS
     //////////////////////////////////////////////////////////////////////////*/
 
     enum DirectDebitError {
@@ -66,6 +66,10 @@ contract DirectDebitExecutor is ERC7579ExecutorBase {
         uint256 firstPayment,
         uint256 expiresAt
     );
+
+    /*//////////////////////////////////////////////////////////////////////////
+                            CONSTANTS & STORAGE
+    //////////////////////////////////////////////////////////////////////////*/
 
     mapping(address smartWallet => mapping(uint256 id => DirectDebit directDebit)) public
         directDebits;
@@ -184,7 +188,7 @@ contract DirectDebitExecutor is ERC7579ExecutorBase {
         // Check if the token is an ERC20 and if the amount is within the balance of the smart
         // wallet
         if (directDebit.token != address(0)) {
-            if (amount > IERC20(smartWallet).balanceOf(directDebit.token)) {
+            if (amount > IERC20(directDebit.token).balanceOf(smartWallet)) {
                 return (false, DirectDebitError.NotEnoughFunds);
             }
         } else {
@@ -247,10 +251,6 @@ contract DirectDebitExecutor is ERC7579ExecutorBase {
         );
         emit DirectDebitExecuted(msg.sender, id, directDebit.receiver, directDebit.token, amount);
     }
-
-    /*//////////////////////////////////////////////////////////////////////////
-                                     INTERNAL
-    //////////////////////////////////////////////////////////////////////////*/
 
     /*//////////////////////////////////////////////////////////////////////////
                                      METADATA
