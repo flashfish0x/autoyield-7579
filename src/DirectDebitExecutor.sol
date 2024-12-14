@@ -10,13 +10,14 @@ import { ERC20Integration } from "modulekit/integrations/ERC20.sol";
 import { IERC20 } from "forge-std/interfaces/IERC20.sol";
 import { ExecutionLib } from "modulekit/accounts/erc7579/lib/ExecutionLib.sol";
 
+// packed into three slots
 struct DirectDebit {
     address token; // 0x0 for native token
+    uint48 firstPayment; // timestamp of first direct debit
+    uint48 expiresAt; // timestamp when the direct debit expires
     address receiver; // address to receive the direct debit
-    uint128 maxAmount; // maximum amount to be spent per interval
-    uint128 interval; // interval between direct debits
-    uint128 firstPayment; // timestamp of first direct debit
-    uint128 expiresAt; // timestamp when the direct debit expires
+    uint96 interval; // interval between direct debits
+    uint256 maxAmount; // maximum amount to be spent per interval
 }
 
 contract DirectDebitExecutor is ERC7579ExecutorBase {
