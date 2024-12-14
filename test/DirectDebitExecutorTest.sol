@@ -17,6 +17,10 @@ contract DirectDebitExecutorTest is RhinestoneModuleKit, Test {
     function setUp() public {
         init();
 
+        // Set the block timestamp to 200 days in the future because starting at 0 will cause
+        // problems with DirectDebitError.NotDue
+        vm.warp(200 days);
+
         // Create the executor
         executor = new DirectDebitExecutor();
         vm.label(address(executor), "DirectDebitExecutor");
@@ -34,25 +38,25 @@ contract DirectDebitExecutorTest is RhinestoneModuleKit, Test {
     function testExec() public {
         // Create a target address and send some ether to it
         address target = makeAddr("target");
-        uint256 value = 1 ether;
+        uint128 value = 1 ether;
 
         // Get the current balance of the target
         uint256 prevBalance = target.balance;
 
         // Encode the execution data sent to the account
-        bytes memory callData = abi.encode(DirectDebit(
-            target,
+        DirectDebit memory debit = DirectDebit(
             address(0), // token
+            target, // receiver
             value, // max amount
             1 days, // interval
-            1, // first payment
+            0, // first payment
             uint128(block.timestamp + 10 days) // expires at
-        ));
+        );
 
         instance.exec({
             target: address(executor),
             value: 0,
-            callData: abi.encodeWithSelector(DirectDebitExecutor.createDirectDebit.selector, callData)
+            callData: abi.encodeWithSelector(DirectDebitExecutor.createDirectDebit.selector, debit)
         });
 
         // First payment should be made immediately

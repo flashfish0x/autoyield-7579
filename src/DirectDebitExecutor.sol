@@ -2,9 +2,13 @@
 pragma solidity ^0.8.23;
 
 import { ERC7579ExecutorBase } from "modulekit/Modules.sol";
-import { IERC7579Account, Execution } from "modulekit/accounts/common/interfaces/IERC7579Account.sol";
+import {
+    IERC7579Account, Execution
+} from "modulekit/accounts/common/interfaces/IERC7579Account.sol";
 import { ModeLib } from "modulekit/accounts/common/lib/ModeLib.sol";
 import { ERC20Integration } from "modulekit/integrations/ERC20.sol";
+import { IERC20 } from "forge-std/interfaces/IERC20.sol";
+import { ExecutionLib } from "modulekit/accounts/erc7579/lib/ExecutionLib.sol";
 
 struct DirectDebit {
     address token; // 0x0 for native token
@@ -20,8 +24,7 @@ contract DirectDebitExecutor is ERC7579ExecutorBase {
                             CONSTANTS & STORAGE
     //////////////////////////////////////////////////////////////////////////*/
 
-
-     enum DirectDebitError {
+    enum DirectDebitError {
         None,
         NotActive,
         NotDue,
@@ -34,7 +37,7 @@ contract DirectDebitExecutor is ERC7579ExecutorBase {
     error DirectDebitExceeded();
     error DirectDebitNotEnoughFunds();
     error DirectDebitNotReceiver();
-    
+
     event DirectDebitCreated(
         address indexed smartWallet,
         uint128 indexed id,
@@ -63,9 +66,8 @@ contract DirectDebitExecutor is ERC7579ExecutorBase {
         uint128 expiresAt
     );
 
-    
-
-    mapping(address smartWallet => mapping(uint128 id => DirectDebit directDebit)) public directDebits;
+    mapping(address smartWallet => mapping(uint128 id => DirectDebit directDebit)) public
+        directDebits;
     mapping(address smartWallet => mapping(uint128 id => uint128 lastPayment)) public lastPayment;
     mapping(address smartWallet => uint128 currentId) public currentIds;
     mapping(address smartWallet => bool isInstalled) public isInstalled;
@@ -79,7 +81,7 @@ contract DirectDebitExecutor is ERC7579ExecutorBase {
      *
      * @param data The data to initialize the module with
      */
-    function onInstall(bytes calldata data) external override { 
+    function onInstall(bytes calldata data) external override {
         isInstalled[msg.sender] = true;
     }
 
@@ -88,9 +90,9 @@ contract DirectDebitExecutor is ERC7579ExecutorBase {
      *
      * @param data The data to de-initialize the module with
      */
-    function onUninstall(bytes calldata data) external override { 
+    function onUninstall(bytes calldata data) external override {
         delete currentIds[msg.sender];
-        isInstalled[msg.sender] = false;    
+        isInstalled[msg.sender] = false;
     }
 
     /**
@@ -101,33 +103,67 @@ contract DirectDebitExecutor is ERC7579ExecutorBase {
      */
     function isInitialized(address smartAccount) external view returns (bool) {
         return isInstalled[smartAccount];
-     }
+    }
 
     function createDirectDebit(DirectDebit memory directDebit) external {
         directDebits[msg.sender][currentIds[msg.sender]] = directDebit;
         currentIds[msg.sender]++;
-        emit DirectDebitCreated(msg.sender, currentIds[msg.sender] - 1, directDebit.receiver, directDebit.token, directDebit.maxAmount, directDebit.interval, directDebit.firstPayment, directDebit.expiresAt);
+        emit DirectDebitCreated(
+            msg.sender,
+            currentIds[msg.sender] - 1,
+            directDebit.receiver,
+            directDebit.token,
+            directDebit.maxAmount,
+            directDebit.interval,
+            directDebit.firstPayment,
+            directDebit.expiresAt
+        );
     }
 
     function cancelDirectDebit(uint128 id) external {
         directDebits[msg.sender][id].expiresAt = uint128(block.timestamp);
-        emit DirectDebitAmended(msg.sender, id, directDebits[msg.sender][id].receiver, directDebits[msg.sender][id].token, directDebits[msg.sender][id].maxAmount, directDebits[msg.sender][id].interval, directDebits[msg.sender][id].firstPayment, directDebits[msg.sender][id].expiresAt);
+        emit DirectDebitAmended(
+            msg.sender,
+            id,
+            directDebits[msg.sender][id].receiver,
+            directDebits[msg.sender][id].token,
+            directDebits[msg.sender][id].maxAmount,
+            directDebits[msg.sender][id].interval,
+            directDebits[msg.sender][id].firstPayment,
+            directDebits[msg.sender][id].expiresAt
+        );
     }
 
     function amendDirectDebit(uint128 id, DirectDebit memory directDebit) external {
         directDebits[msg.sender][id] = directDebit;
-        emit DirectDebitAmended(msg.sender, id, directDebit.receiver, directDebit.token, directDebit.maxAmount, directDebit.interval, directDebit.firstPayment, directDebit.expiresAt);
+        emit DirectDebitAmended(
+            msg.sender,
+            id,
+            directDebit.receiver,
+            directDebit.token,
+            directDebit.maxAmount,
+            directDebit.interval,
+            directDebit.firstPayment,
+            directDebit.expiresAt
+        );
     }
 
     /*//////////////////////////////////////////////////////////////////////////
                                      MODULE LOGIC
     //////////////////////////////////////////////////////////////////////////*/
 
-    function validateDirectDebit(address smartWallet, uint128 id, uint256 amount) public view 
-        returns (bool valid, DirectDebitError error) {
+    function validateDirectDebit(
+        address smartWallet,
+        uint128 id,
+        uint256 amount
+    )
+        public
+        view
+        returns (bool valid, DirectDebitError error)
+    {
         DirectDebit memory directDebit = directDebits[smartWallet][id];
-        
-        if(id >= currentIds[smartWallet]) {
+
+        if (id >= currentIds[smartWallet]) {
             return (false, DirectDebitError.NotActive);
         }
         if (block.timestamp < directDebit.firstPayment || block.timestamp > directDebit.expiresAt) {
@@ -148,21 +184,29 @@ contract DirectDebitExecutor is ERC7579ExecutorBase {
             if (amount > address(smartWallet).balance) {
                 return (false, DirectDebitError.NotEnoughFunds);
             }
-        }   
-        
+        }
+
         return (true, DirectDebitError.None);
     }
 
-    function canExecute(address smartWallet, uint128 id, uint256 amount) external view returns (bool) {
-        (bool valid, ) = validateDirectDebit(smartWallet, id, amount);
+    function canExecute(
+        address smartWallet,
+        uint128 id,
+        uint256 amount
+    )
+        external
+        view
+        returns (bool)
+    {
+        (bool valid,) = validateDirectDebit(smartWallet, id, amount);
         return valid;
     }
 
     function execute(address smartWallet, uint128 id, uint256 amount) external {
         DirectDebit memory directDebit = directDebits[smartWallet][id];
-        
+
         (bool valid, DirectDebitError error) = validateDirectDebit(smartWallet, id, amount);
-        if(!valid) {
+        if (!valid) {
             if (error == DirectDebitError.NotActive) {
                 revert DirectDebitNotActive();
             } else if (error == DirectDebitError.NotDue) {
@@ -173,29 +217,28 @@ contract DirectDebitExecutor is ERC7579ExecutorBase {
                 revert DirectDebitNotEnoughFunds();
             }
         }
-        if(msg.sender != directDebit.receiver) {
+        if (msg.sender != directDebit.receiver) {
             revert DirectDebitNotReceiver();
         }
+        // Update last payment timestamp before execution to avoid reentrancy
+        lastPayment[smartWallet][id] = uint128(block.timestamp);
 
-        // Create execution data based on token type        
+        // Create execution data based on token type
         Execution memory execution;
         if (directDebit.token == address(0)) {
             // Native token transfer
-            execution = Execution({
-                target: directDebit.receiver,
-                value: amount,
-                callData: ""
-            });
+            execution = Execution({ target: directDebit.receiver, value: amount, callData: "" });
         } else {
             // ERC20 token transfer
-            execution = ERC20Integration.transfer(directDebit.token, directDebit.receiver, amount);
+            execution =
+                ERC20Integration.transfer(IERC20(directDebit.token), directDebit.receiver, amount);
         }
-        
-        // Update last payment timestamp before execution to avoid reentrancy
-        lastPayment[msg.sender][id] = uint128(block.timestamp); 
-        IERC7579Account(msg.sender).executeFromExecutor(ModeLib.encodeSimpleSingle(), execution);
-        emit DirectDebitExecuted( msg.sender, id, directDebit.receiver, directDebit.token, amount);
-        
+
+        IERC7579Account(smartWallet).executeFromExecutor(
+            ModeLib.encodeSimpleSingle(),
+            ExecutionLib.encodeSingle(execution.target, execution.value, execution.callData)
+        );
+        emit DirectDebitExecuted(msg.sender, id, directDebit.receiver, directDebit.token, amount);
     }
 
     /*//////////////////////////////////////////////////////////////////////////

@@ -9,3 +9,7 @@ docs/
 # Dotenv file
 .env
 node_modules
+
+.vscode/
+.hypothesis/
+bin/
