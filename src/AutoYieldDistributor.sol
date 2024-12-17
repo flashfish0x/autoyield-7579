@@ -1,21 +1,30 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.23;
 
-import { ERC7579ExecutorBase } from "node_modules/@rhinestone/modulekit/src/Modules.sol";
+import { ERC7579ExecutorBase } from "modulekit/Modules.sol";
 import {
     IERC7579Account,
     Execution
-} from "node_modules/@rhinestone/modulekit/src/accounts/common/interfaces/IERC7579Account.sol";
-import { ModeLib } from "node_modules/@rhinestone/modulekit/src/accounts/common/lib/ModeLib.sol";
-import { ERC20Integration } from "node_modules/@rhinestone/modulekit/src/integrations/ERC20.sol";
-import { IERC20 } from "node_modules/forge-std/src/interfaces/IERC20.sol";
+} from "modulekit/accounts/common/interfaces/IERC7579Account.sol";
+import { ModeLib } from "modulekit/accounts/common/lib/ModeLib.sol";
+import { ERC20Integration } from "modulekit/integrations/ERC20.sol";
+import { IERC20 } from "forge-std/interfaces/IERC20.sol";
 import { ExecutionLib } from
-    "node_modules/@rhinestone/modulekit/src/accounts/erc7579/lib/ExecutionLib.sol";
-import { IERC4626 } from "./interfaces/IERC4626.sol";
+    "modulekit/accounts/erc7579/lib/ExecutionLib.sol";
+import { IERC4626 } from "modulekit/integrations/ERC4626.sol";
+
+enum APRCalculationMethod {
+    AVERAGE,
+    TOTAL
+}
 
 struct Config {
-    uint256 vaults;
+    address[] approvedVaults;
     uint256 minImprovement; // Minimum APR improvement required (in basis points)
+    uint256 snapshotsRequired;
+    uint256 maxTimeBetweenSnapshots;
+    uint256 maxInvestment;
+    APRCalculationMethod aprCalculationMethod;
 }
 
 struct Snapshot {
@@ -30,23 +39,32 @@ contract AutoYieldDistributor is ERC7579ExecutorBase {
 
     event VaultRegistered(address indexed asset, address indexed vault);
     event FundsMoved(address indexed fromVault, address indexed toVault, uint256 amount);
-
-    error InvalidVault();
+    event SnapshotTaken(address indexed vault, uint256 pricePerShare, uint256 timestamp);
+    error InvalidVault(address vault);
     error InsufficientImprovement();
     error NoSnapshots();
     error SnapshotTooSoon(address vault);
-
+    error NotInstalled();
+    error InvalidSmartWallet();
+    error SnapshotsStale(address vault);
+    error InvalidInvestmentChange();
+    error InsufficientBalance(address vault);
+    error MaxInvestmentReached(address vault);
+    error InvalidSnapshotsRequired();
+    error InvalidMinImprovement();
+    error InvalidMaxTimeBetweenSnapshots();
     /*//////////////////////////////////////////////////////////////////////////
                             CONSTANTS & STORAGE
     //////////////////////////////////////////////////////////////////////////*/
 
     mapping(address asset => address vault) public vaultsByAsset;
-    mapping(address vault => uint256 id) public vaultIds;
+    mapping(address vault => bool enabled) public vaultEnabled;
     mapping(address vault => Snapshot[] snapshots) public snapshots;
 
-    mapping(address smartWallet => Config config) public configs;
+    mapping(address smartWallet => mapping(address asset => Config config)) public configs;
 
     mapping(address vault => address asset) public assetByVault;
+    mapping(address smartWallet => bool enabled) public smartWalletInstalled;
 
     /*//////////////////////////////////////////////////////////////////////////
                                      CONFIG
@@ -58,7 +76,34 @@ contract AutoYieldDistributor is ERC7579ExecutorBase {
      * @param data The data to initialize the module with
      */
     function onInstall(bytes calldata data) external override {
-        isInstalled[msg.sender] = true;
+        if(!IERC7579Account(msg.sender).supportsModule(TYPE_EXECUTOR)) revert InvalidSmartWallet();
+        smartWalletInstalled[msg.sender] = true;
+    }
+
+    function configure(address asset, Config calldata config) external {
+
+        if(!smartWalletInstalled[msg.sender]) revert NotInstalled();
+        if(config.snapshotsRequired < 2) revert InvalidSnapshotsRequired();
+        if(config.minImprovement == 0) revert InvalidMinImprovement();
+        if(config.maxTimeBetweenSnapshots <= 6 hours) revert InvalidMaxTimeBetweenSnapshots();
+        configs[msg.sender][asset] = config;
+
+        // Check that all vaults are for the correct asset
+        for (uint256 i = 0; i < config.approvedVaults.length; i++) {
+            address vault = config.approvedVaults[i];
+
+            if (IERC4626(vault).asset() != asset) {
+                revert InvalidVault(vault);
+            }
+
+            //register vault if not already registered
+            if(!vaultEnabled[vault]) {
+                vaultEnabled[vault] = true;
+                assetByVault[vault] = asset;
+                emit VaultRegistered(asset, vault);
+            }
+        }
+        snapshotVaults(config.approvedVaults);
     }
 
     /**
@@ -67,7 +112,7 @@ contract AutoYieldDistributor is ERC7579ExecutorBase {
      * @param data The data to de-initialize the module with
      */
     function onUninstall(bytes calldata data) external override {
-        isInstalled[msg.sender] = false;
+        smartWalletInstalled[msg.sender] = false;
     }
 
     /**
@@ -77,18 +122,19 @@ contract AutoYieldDistributor is ERC7579ExecutorBase {
      * @return true if the module is initialized, false otherwise
      */
     function isInitialized(address smartAccount) external view returns (bool) {
-        //todo
+       if(!smartWalletInstalled[smartAccount]) return false;
+       return true;
     }
 
     /*//////////////////////////////////////////////////////////////////////////
                                      MODULE LOGIC
     //////////////////////////////////////////////////////////////////////////*/
 
-    function snapshotVaults(address[] calldata vaults) external {
+    function snapshotVaults(address[] calldata vaults) public {
         for (uint256 i = 0; i < vaults.length; i++) {
             address vault = vaults[i];
             //vault must be registered to be snapshotted
-            if (vaultIds[vault] == 0) continue;
+            if (!vaultEnabled[vault]) continue;
 
             // Check if enough time has passed since last snapshot (6 hours = 21600 seconds)
             if (snapshots[vault].length > 0) {
@@ -100,7 +146,37 @@ contract AutoYieldDistributor is ERC7579ExecutorBase {
 
             uint256 assets = IERC4626(vault).convertToAssets(1e4);
             snapshots[vault].push(Snapshot({ pricePerShare: assets, timestamp: block.timestamp }));
+
+            emit SnapshotTaken(vault, assets, block.timestamp);
         }
+    }
+
+    function calculateVaultAPR(address vault, uint256 numberOfSnapshots, uint256 maxTimeBetweenSnapshots, APRCalculationMethod aprCalculationMethod) internal view returns (uint256) {
+        Snapshot[] storage vaultSnapshots = snapshots[vault];
+        if (vaultSnapshots.length < numberOfSnapshots) revert NoSnapshots();
+
+        uint256 totalAPR = 0;
+
+        for(uint256 i = 1; i < numberOfSnapshots; i++) {
+            
+            uint256 timeElapsed = vaultSnapshots[vaultSnapshots.length  - i].timestamp 
+                - vaultSnapshots[vaultSnapshots.length - 1-i].timestamp;
+
+            if(timeElapsed > maxTimeBetweenSnapshots) revert SnapshotsStale(vault);
+
+            uint256 oldPrice = vaultSnapshots[vaultSnapshots.length - 1-i].pricePerShare;
+            uint256 newPrice = vaultSnapshots[vaultSnapshots.length -i].pricePerShare;
+
+            if(aprCalculationMethod == APRCalculationMethod.AVERAGE) {
+                totalAPR += calculateAPR(oldPrice, newPrice, timeElapsed);
+            } 
+        }
+
+        if(aprCalculationMethod == APRCalculationMethod.TOTAL) {
+            return calculateAPR(vaultSnapshots[vaultSnapshots.length -numberOfSnapshots].pricePerShare, vaultSnapshots[vaultSnapshots.length - 1].pricePerShare, vaultSnapshots[vaultSnapshots.length - 1].timestamp - vaultSnapshots[vaultSnapshots.length -numberOfSnapshots].timestamp);
+        }
+            
+        return totalAPR / numberOfSnapshots;
     }
 
     function validateInvestmentChange(
@@ -112,38 +188,19 @@ contract AutoYieldDistributor is ERC7579ExecutorBase {
         view
         returns (bool valid)
     {
-        if (vaultIds[fromVault] == 0 || vaultIds[toVault] == 0) revert InvalidVault();
-        if (assetByVault[fromVault] != assetByVault[toVault]) revert InvalidVault();
+        address asset = assetByVault[fromVault];
+        if (!vaultEnabled[fromVault] || !vaultEnabled[toVault]) revert InvalidVault(fromVault);
+        if (asset != assetByVault[toVault]) revert InvalidVault(toVault);  //todo fix error message
 
-        Snapshot[] storage fromSnapshots = snapshots[fromVault];
-        Snapshot[] storage toSnapshots = snapshots[toVault];
+        Config storage config = configs[smartWallet][asset];
 
-        if (fromSnapshots.length < 2 || toSnapshots.length < 2) revert NoSnapshots();
-
-        // Calculate APR for fromVault
-        uint256 fromOldPrice = fromSnapshots[fromSnapshots.length - 2].pricePerShare;
-        uint256 fromNewPrice = fromSnapshots[fromSnapshots.length - 1].pricePerShare;
-        uint256 fromAPR = calculateAPR(
-            fromOldPrice,
-            fromNewPrice,
-            fromSnapshots[fromSnapshots.length - 2].timestamp
-                - fromSnapshots[fromSnapshots.length - 1].timestamp
-        );
-
-        // Calculate APR for toVault
-        uint256 toOldPrice = toSnapshots[toSnapshots.length - 2].pricePerShare;
-        uint256 toNewPrice = toSnapshots[toSnapshots.length - 1].pricePerShare;
-        uint256 toAPR = calculateAPR(
-            toOldPrice,
-            toNewPrice,
-            toSnapshots[toSnapshots.length - 2].timestamp
-                - toSnapshots[toSnapshots.length - 1].timestamp
-        );
+        uint256 fromAPR = calculateVaultAPR(fromVault, config.snapshotsRequired, config.maxTimeBetweenSnapshots, config.aprCalculationMethod);
+        uint256 toAPR = calculateVaultAPR(toVault, config.snapshotsRequired, config.maxTimeBetweenSnapshots, config.aprCalculationMethod);
 
         // Check if improvement exceeds minimum threshold
-        uint256 improvement = toAPR > fromAPR ? ((toAPR - fromAPR) * 10_000) / fromAPR : 0;
+        uint256 improvement = toAPR > fromAPR ? toAPR - fromAPR : 0;
 
-        if (improvement < configs[smartWallet].minImprovement) revert InsufficientImprovement();
+        if (improvement < configs[smartWallet][assetByVault[fromVault]].minImprovement) revert InsufficientImprovement();
 
         return true;
     }
@@ -175,15 +232,7 @@ contract AutoYieldDistributor is ERC7579ExecutorBase {
         return periodReturn * periodsPerYear;
     }
 
-    function registerVault(address asset, address vault) external {
-        if (vaultsByAsset[asset] != address(0)) revert("Asset already has vault");
 
-        vaultsByAsset[asset] = vault;
-        assetByVault[vault] = asset;
-        vaultIds[vault] = block.timestamp;
-
-        emit VaultRegistered(asset, vault);
-    }
 
     function execute(
         address smartWallet,
@@ -193,25 +242,38 @@ contract AutoYieldDistributor is ERC7579ExecutorBase {
     )
         external
     {
-        require(
-            validateInvestmentChange(smartWallet, fromVault, toVault), "Invalid investment change"
-        );
+        if (!validateInvestmentChange(smartWallet, fromVault, toVault)) revert InvalidInvestmentChange();
+
+        //now check the balances make sense
+        uint256 fromVaultBalance = IERC4626(fromVault).convertToAssets(IERC4626(fromVault).balanceOf(smartWallet));
+
+        if(fromVaultBalance < amount) revert InsufficientBalance(fromVault);
+
+        uint256 toVaultBalance = IERC4626(toVault).convertToAssets(IERC4626(toVault).balanceOf(smartWallet));
+
+        if(toVaultBalance + amount > configs[smartWallet][assetByVault[fromVault]].maxInvestment) revert MaxInvestmentReached(toVault);
 
         // Withdraw from source vault
         bytes memory withdrawData = abi.encodeWithSelector(
             IERC4626.withdraw.selector, amount, address(smartWallet), address(smartWallet)
         );
 
+        //approve the asset for the destination vault
+        bytes memory approveData = abi.encodeWithSelector(
+            IERC20.approve.selector, toVault, amount
+        );
+
         // Deposit to destination vault
         bytes memory depositData =
             abi.encodeWithSelector(IERC4626.deposit.selector, amount, address(smartWallet));
 
-        Execution[] memory executions = new Execution[](2);
+        Execution[] memory executions = new Execution[](3);
         executions[0] = Execution(fromVault, 0, withdrawData);
-        executions[1] = Execution(toVault, 0, depositData);
+        executions[1] = Execution(toVault, 0, approveData);
+        executions[2] = Execution(toVault, 0, depositData);
 
         IERC7579Account(smartWallet).executeFromExecutor(
-            ModeLib.encodeSimpleMulti(), ExecutionLib.encodeMulti(executions)
+            ModeLib.encodeSimpleBatch(), ExecutionLib.encodeBatch(executions)
         );
 
         emit FundsMoved(fromVault, toVault, amount);
