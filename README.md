@@ -1,58 +1,72 @@
-# Direct Debit ERC-7579 Executor
+# AutoYieldDistributor ERC-7579 Executor
 
-The DirectDebitExecutor is a module that enables recurring payments (direct debits) for ERC-7579 compliant smart wallets. It allows account owners to authorize recurring payments to specific receivers up to a maximum amount at defined intervals. Similar to traditional bank direct debits. 
-
-Once authorized, the receiver can execute payments when they are due. The receiver specifies the amount to be paid up to the maximum amount authorized by the account owner.
+The AutoYieldDistributor is a smart contract module that automatically optimizes yield across different ERC4626 vaults for ERC-7579 compliant smart wallets. It monitors vault performance and moves funds to higher-yielding vaults when meaningful improvements in APR are detected.
 
 ## Features
 
-- **Native Token & ERC20 Support**: Supports both native token (ETH) and ERC20 token payments
-- **Configurable Parameters**: Each direct debit can be configured with:
-  - Maximum payment amount per interval
-  - Payment interval duration
-  - Start time for first payment
-  - Expiration timestamp
-  - Token type and receiver address
-- **Payment Controls**: 
-  - Payments can only be initiated by the authorized receiver
-  - Amount cannot exceed the configured maximum
-  - Payments must respect the configured interval
-  - Direct debits automatically expire at the set timestamp
-  - Insufficient funds are rejected
+- **Automated Yield Optimization**: Automatically moves funds between vaults when better yields are available
+- **ERC4626 Vault Integration**: Works with any ERC4626-compliant yield vaults
+- **Performance Monitoring**: Takes regular snapshots of vault performance to calculate APRs
+- **Configurable Parameters**:
+  - Minimum APR improvement threshold (in basis points)
+  - Snapshot intervals (minimum 6 hours between snapshots)
+  - Multiple vault support per asset
 
 ## How It Works
 
-1. **Setup**: Account owner creates a direct debit by calling `createDirectDebit()` with the desired parameters
-2. **Execution**: The authorized receiver can call `execute()` to collect payments when they are due
-3. **Management**: Account owner can:
-   - Cancel existing direct debits using `cancelDirectDebit()`
-   - Modify direct debit parameters using `amendDirectDebit()`
+1. **Vault Registration**: Vaults are registered for specific assets using `registerVault()`
+2. **Performance Tracking**: Regular snapshots are taken using `snapshotVaults()` to track vault performance
+3. **Yield Optimization**: The module automatically moves funds when better yields are detected via `execute()`
 
-## Validation
+## Key Components
 
-Each payment attempt is validated to ensure:
-- The direct debit exists and is active
-- No payment has been made in the current period
-- The requested amount is within limits
-- The account has sufficient funds
-- The caller is the authorized receiver
+### Snapshots
+- Price-per-share snapshots are taken every 6+ hours
+- APR is calculated using time-weighted performance data
+- Minimum of 2 snapshots required before optimization decisions
+
+### Validation
+Each investment change is validated to ensure:
+- Both vaults are properly registered
+- Vaults handle the same underlying asset
+- Sufficient performance data exists
+- APR improvement exceeds minimum threshold
+
+## Usage
+
+### Register a New Vault
+```solidity
+function registerVault(address asset, address vault) external
+```
+
+### Take Snapshots
+```solidity
+function snapshotVaults(address[] calldata vaults) external
+```
+
+### Execute Yield Optimization
+```solidity
+function execute(
+    address smartWallet,
+    address fromVault,
+    address toVault,
+    uint256 amount
+) external
+```
 
 ## Testing the Module
 
 ### Install dependencies
-
 ```shell
 pnpm install
 ```
 
-### Building modules
-
+### Build
 ```shell
 forge build
 ```
 
-### Testing modules
-
+### Test
 ```shell
 forge test
 ```
