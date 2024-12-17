@@ -1,10 +1,10 @@
 [profile.default]
-solc = "0.8.23"
+solc >= "0.6.2"
 evm_version = "cancun"
 src = "src"
 out = "out"
 script = "script"
-libs = ["node_modules"]
+libs = ["node_modules", "lib"]
 fs_permissions = [{ access = "read", path = "out-optimized" }, { access = "read-write", path = "gas_calculations" }]
 allow_paths = ["*", "/"]
 gas_limit = "18446744073709551615"
