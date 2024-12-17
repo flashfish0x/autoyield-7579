@@ -32,6 +32,9 @@ struct Snapshot {
     uint256 timestamp;
 }
 
+/// @title AutoYieldDistributor
+/// @notice A module that automatically manages yield distribution across different vaults
+/// @dev Implements ERC7579ExecutorBase for smart contract wallet integration
 contract AutoYieldDistributor is ERC7579ExecutorBase {
     /*//////////////////////////////////////////////////////////////////////////
                             LOGS & ERRORS
@@ -80,6 +83,10 @@ contract AutoYieldDistributor is ERC7579ExecutorBase {
         smartWalletInstalled[msg.sender] = true;
     }
 
+    /// @notice Configures the yield distribution settings for a specific asset for a smart wallet
+    /// @param asset The address of the asset to configure
+    /// @param config The configuration parameters including approved vaults and thresholds
+    /// @dev Validates vaults and initializes snapshots for APR tracking
     function configure(address asset, Config calldata config) external {
 
         if(!smartWalletInstalled[msg.sender]) revert NotInstalled();
@@ -130,6 +137,9 @@ contract AutoYieldDistributor is ERC7579ExecutorBase {
                                      MODULE LOGIC
     //////////////////////////////////////////////////////////////////////////*/
 
+    /// @notice Takes snapshots of price per share for specified vaults
+    /// @param vaults Array of vault addresses to snapshot
+    /// @dev Requires minimum 6 hours between snapshots
     function snapshotVaults(address[] calldata vaults) public {
         for (uint256 i = 0; i < vaults.length; i++) {
             address vault = vaults[i];
@@ -140,7 +150,8 @@ contract AutoYieldDistributor is ERC7579ExecutorBase {
             if (snapshots[vault].length > 0) {
                 Snapshot storage lastSnapshot = snapshots[vault][snapshots[vault].length - 1];
                 if (block.timestamp - lastSnapshot.timestamp < 6 hours) {
-                    revert SnapshotTooSoon(vault);
+                    //do nothing, we don't want to take a snapshot too soon
+                    continue;
                 }
             }
 
@@ -151,7 +162,18 @@ contract AutoYieldDistributor is ERC7579ExecutorBase {
         }
     }
 
-    function calculateVaultAPR(address vault, uint256 numberOfSnapshots, uint256 maxTimeBetweenSnapshots, APRCalculationMethod aprCalculationMethod) internal view returns (uint256) {
+    /// @notice Calculates the APR for a specific vault based on historical snapshots
+    /// @param vault The vault address to calculate APR for
+    /// @param numberOfSnapshots Number of snapshots to use in calculation
+    /// @param maxTimeBetweenSnapshots Maximum allowed time between snapshots
+    /// @param aprCalculationMethod Method to use for APR calculation (AVERAGE or TOTAL)
+    /// @return APR in basis points
+    function calculateVaultAPR(
+        address vault,
+        uint256 numberOfSnapshots,
+        uint256 maxTimeBetweenSnapshots,
+        APRCalculationMethod aprCalculationMethod
+    ) internal view returns (uint256) {
         Snapshot[] storage vaultSnapshots = snapshots[vault];
         if (vaultSnapshots.length < numberOfSnapshots) revert NoSnapshots();
 
@@ -179,6 +201,11 @@ contract AutoYieldDistributor is ERC7579ExecutorBase {
         return totalAPR / numberOfSnapshots;
     }
 
+    /// @notice Validates if moving funds between vaults would result in better yields
+    /// @param smartWallet The smart wallet address
+    /// @param fromVault Source vault address
+    /// @param toVault Destination vault address
+    /// @return valid True if the investment change is valid and meets improvement criteria
     function validateInvestmentChange(
         address smartWallet,
         address fromVault,
@@ -234,6 +261,12 @@ contract AutoYieldDistributor is ERC7579ExecutorBase {
 
 
 
+    /// @notice Executes the movement of funds between vaults
+    /// @param smartWallet The smart wallet address
+    /// @param fromVault Source vault to withdraw from
+    /// @param toVault Destination vault to deposit to
+    /// @param amount Amount of assets to move
+    /// @dev Performs withdrawal, approval, and deposit in a single transaction
     function execute(
         address smartWallet,
         address fromVault,
