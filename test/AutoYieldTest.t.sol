@@ -87,6 +87,8 @@ contract AutoYieldDistributorTest is RhinestoneModuleKit, Test {
         executor.snapshotVaults(approvedVaults);
 
         assertEq(executor.validateInvestmentChange(instance.account, address(erc4626Vault), address(erc4626Vault2)), true);
+
+        executor.execute(instance.account, address(erc4626Vault), address(erc4626Vault2), 1e18);
     }
 
 }

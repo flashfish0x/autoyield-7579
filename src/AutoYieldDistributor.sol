@@ -284,7 +284,9 @@ contract AutoYieldDistributor is ERC7579ExecutorBase {
 
         uint256 toVaultBalance = IERC4626(toVault).convertToAssets(IERC4626(toVault).balanceOf(smartWallet));
 
-        if(toVaultBalance + amount > configs[smartWallet][assetByVault[fromVault]].maxInvestment) revert MaxInvestmentReached(toVault);
+        address asset = assetByVault[fromVault];
+
+        if(toVaultBalance + amount > configs[smartWallet][asset].maxInvestment) revert MaxInvestmentReached(toVault);
 
         // Withdraw from source vault
         bytes memory withdrawData = abi.encodeWithSelector(
@@ -302,7 +304,7 @@ contract AutoYieldDistributor is ERC7579ExecutorBase {
 
         Execution[] memory executions = new Execution[](3);
         executions[0] = Execution(fromVault, 0, withdrawData);
-        executions[1] = Execution(toVault, 0, approveData);
+        executions[1] = Execution(asset, 0, approveData);
         executions[2] = Execution(toVault, 0, depositData);
 
         IERC7579Account(smartWallet).executeFromExecutor(
